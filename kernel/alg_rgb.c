@@ -166,32 +166,44 @@ struct alg_color
  *     { "orange", 0x80, 0xFF, 0x00 },
  */
 static const struct alg_color colors[] = {
-    { "off",            0x00, 0x00, 0x00 },
+    {"off", 0x00, 0x00, 0x00},
 
-    { "red",            0x00, 0xFF, 0x00 },
-    { "orange",         0x7F, 0xFF, 0x00 },
-    { "yellow",         0xFF, 0xFF, 0x00 },
+    {"red", 0x00, 0xFF, 0x00},
+    {"orange", 0x7F, 0xFF, 0x00},
+    {"yellow", 0xFF, 0xFF, 0x00},
 
-    { "lime",           0xFF, 0x7F, 0x00 },
-    { "light-green",    0xFF, 0x3F, 0x00 },
-    { "green",          0xFF, 0x00, 0x00 },
+    {"lime", 0xFF, 0x7F, 0x00},
+    {"light-green", 0xFF, 0x3F, 0x00},
+    {"green", 0xFF, 0x00, 0x00},
 
-    { "green-cyan",     0xFF, 0x00, 0x46 },
-    { "cyan",           0xFF, 0x00, 0xC8 },
+    {"green-cyan", 0xFF, 0x00, 0x46},
+    {"cyan", 0xFF, 0x00, 0xC8},
 
-    { "light-blue",     0x7F, 0x00, 0xC8 },
-    { "blue",           0x00, 0x00, 0xC8 },
+    {"light-blue", 0x7F, 0x00, 0xC8},
+    {"blue", 0x00, 0x00, 0xC8},
 
-    { "violet",         0x00, 0x7F, 0xC8 },
-    { "magenta",        0x00, 0xFF, 0xC8 },
-    { "pink",           0x00, 0xFF, 0x7F },
+    {"violet", 0x00, 0x7F, 0xC8},
+    {"magenta", 0x00, 0xFF, 0xC8},
+    {"pink", 0x00, 0xFF, 0x7F},
 
-    { "flesh",          0x7F, 0xFF, 0x3F },
+    {"flesh", 0x7F, 0xFF, 0x3F},
 
-    { "bluish-white",   0x7F, 0x3F, 0x7F },
+    {"bluish-white", 0x7F, 0x3F, 0x7F},
 
-    { "white",          0xFF, 0xFF, 0xFF },
+    {"white", 0xFF, 0xFF, 0xFF},
 };
+
+/*
+ * Acer firmware brightness levels.
+ *
+ * Reverse engineered from Windows captures.
+ */
+static const u8 brightness_levels[] = {
+    0x00,
+    0x2F,
+    0x5F,
+    0x8F,
+    0xBF};
 
 /*
  * Send a color packet to firmware.
@@ -211,15 +223,32 @@ static const struct alg_color colors[] = {
  *
  *     Function = 0x67
  */
-static void send_color(const struct alg_color *c)
+static void send_color(
+    const struct alg_color *c,
+    int brightness)
 {
     union acpi_object *out;
 
-    u8 rgb_buf[4] = {
-        c->g,
-        c->r,
-        c->b,
-        0xF0};
+    u8 g;
+    u8 r;
+    u8 b;
+
+    u8 rgb_buf[4];
+
+    if (brightness < 0)
+        brightness = 0;
+
+    if (brightness > 4)
+        brightness = 4;
+
+    g = (c->g * brightness_levels[brightness]) / 0xBF;
+    r = (c->r * brightness_levels[brightness]) / 0xBF;
+    b = (c->b * brightness_levels[brightness]) / 0xBF;
+
+    rgb_buf[0] = g;
+    rgb_buf[1] = r;
+    rgb_buf[2] = b;
+    rgb_buf[3] = 0xF0;
 
     union acpi_object buf_obj;
     union acpi_object pkg_obj;
@@ -245,7 +274,10 @@ static void send_color(const struct alg_color *c)
     if (out)
         ACPI_FREE(out);
 
-    pr_info("alg-rgb: applied color '%s'\n", c->name);
+    pr_info(
+        "alg-rgb: applied color '%s' brightness=%d\n",
+        c->name,
+        brightness);
 }
 
 /*
@@ -272,6 +304,8 @@ static ssize_t alg_write(
 {
     char kbuf[64];
     int i;
+    int brightness = 4;
+    char color_name[32];
 
     if (len == 0)
         return -EINVAL;
@@ -299,6 +333,14 @@ static ssize_t alg_write(
      *     "red"
      */
     strim(kbuf);
+    if (sscanf(
+            kbuf,
+            "%31s %d",
+            color_name,
+            &brightness) < 1)
+    {
+        return -EINVAL;
+    }
 
     /*
      * Search color table.
@@ -306,10 +348,12 @@ static ssize_t alg_write(
     for (i = 0; i < ARRAY_SIZE(colors); i++)
     {
 
-        if (!strcmp(kbuf, colors[i].name))
+        if (!strcmp(color_name, colors[i].name))
         {
 
-            send_color(&colors[i]);
+            send_color(
+                &colors[i],
+                brightness);
 
             return len;
         }
@@ -437,4 +481,4 @@ module_exit(alg_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Kaushik Sarkar");
 MODULE_DESCRIPTION("ALG RGB Driver for Acer CLV0001 keyboards");
-MODULE_VERSION(ALG_RGB_VERSION_STRING); 
+MODULE_VERSION(ALG_RGB_VERSION_STRING);

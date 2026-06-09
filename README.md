@@ -10,37 +10,44 @@ This project was created by reverse engineering Acer's Windows RGB implementatio
 
 ## Features
 
-* Native Linux support
-* Direct ACPI communication
-* No Windows dependency
-* No vendor utilities required
-* Lightweight kernel module
-* Simple CLI interface
-* Safe color whitelist
-* Open source
-* Reverse engineered protocol documentation
+- Native Linux support
+- Direct ACPI communication
+- No Windows dependency
+- No vendor utilities required
+- Lightweight kernel module
+- Simple CLI interface
+- Built-in color validation
+- Brightness control
+- Open source
+- Reverse engineered protocol documentation
 
-Currently supported colors:
+Supported colors:
 
-* off
-* red
-* orange
-* yellow
-* lime
-* light-green
-* green
-* green-cyan
-* cyan
-* light-blue
-* blue
-* violet
-* magenta
-* pink
-* flesh
-* bluish-white
-* white
+- off
+- red
+- orange
+- yellow
+- lime
+- light-green
+- green
+- green-cyan
+- cyan
+- light-blue
+- blue
+- violet
+- magenta
+- pink
+- flesh
+- bluish-white
+- white
 
-Additional colors will be added as they are identified and verified from Acer's Windows implementation.
+Supported brightness levels:
+
+- 0 (off)
+- 1
+- 2
+- 3
+- 4 (maximum)
 
 ---
 
@@ -48,15 +55,15 @@ Additional colors will be added as they are identified and verified from Acer's 
 
 The Acer ALG series ships with RGB keyboard support, but the official control software is only available on Windows.
 
-On Linux, the keyboard typically remains stuck with the firmware default behavior and there is no official way to control it.
+On Linux, the keyboard typically remains stuck with firmware defaults and there is no official way to control it.
 
-Rather than relying on Windows-only software, this project communicates directly with the laptop firmware using the same ACPI interface used by Acer's own driver.
+This project communicates directly with the firmware using the same ACPI interface used by Acer's own Windows implementation.
 
 ---
 
 ## Reverse Engineering Overview
 
-While investigating Acer's Windows RGB implementation, the keyboard control path was traced to a proprietary ACPI device:
+During analysis of Acer's Windows RGB stack, keyboard control was traced to the proprietary ACPI device:
 
 ```text
 CLV0001
@@ -68,13 +75,13 @@ Linux exposes this device as:
 \_SB.DCHU
 ```
 
-The Windows driver communicates with this device through:
+The Windows implementation communicates with the device through:
 
 ```text
 AcpiBridge.sys
 ```
 
-After reverse engineering the driver and analyzing the system ACPI tables, the RGB control protocol was identified and reproduced on Linux.
+The RGB protocol was reverse engineered by analyzing firmware traffic and reproducing the same ACPI communication path on Linux.
 
 Communication flow:
 
@@ -111,14 +118,13 @@ UUID:
 93f224e4-fbdc-4bbf-add6-db71bdc0afad
 ```
 
-and:
+Function:
 
 ```text
-Function:
 0x67
 ```
 
-The payload is a 4-byte buffer:
+Payload format:
 
 ```text
 Byte 0 = Green
@@ -129,13 +135,11 @@ Byte 3 = Command / Zone
 
 Important:
 
-The firmware uses:
-
 ```text
 GRB
 ```
 
-instead of:
+is used internally instead of:
 
 ```text
 RGB
@@ -154,7 +158,7 @@ Blue:
 00 00 FF F0
 
 Yellow:
-CC FF 00 F0
+FF FF 00 F0
 
 White:
 FF FF FF F0
@@ -164,32 +168,29 @@ FF FF FF F0
 
 ## Safety
 
-This driver intentionally uses only the known-safe firmware command:
+Only the known-safe firmware command is exposed:
 
 ```text
 Function 0x67
 ```
 
-Several additional firmware functions were discovered during analysis:
+Additional firmware functions were discovered during reverse engineering:
 
 ```text
 0x68
 0x69
 0x6A
-...
 ```
 
-These are currently undocumented and are intentionally disabled.
+These remain undocumented and are intentionally disabled.
 
-Testing of one experimental function resulted in a complete system lockup.
-
-Until their behavior is fully understood, they will not be exposed through the public interface.
+Testing of one experimental function resulted in a complete system lockup, so unknown firmware calls are not exposed through the public interface.
 
 ---
 
 ## Supported Hardware
 
-Currently tested on:
+Verified on:
 
 ```text
 Acer ALG AL15G-53
@@ -203,15 +204,15 @@ CLV0001
 
 present in ACPI.
 
-The driver may work on other Acer systems exposing the same firmware interface, but this has not yet been verified.
+Other Acer systems exposing the same firmware interface may work but have not yet been validated.
 
-Check whether your system exposes the device:
+Check for device presence:
 
 ```bash
 ls /sys/bus/acpi/devices | grep CLV
 ```
 
-Expected output:
+Expected:
 
 ```text
 CLV0001:00
@@ -240,10 +241,10 @@ Verify:
 dmesg | tail
 ```
 
-Expected output:
+Expected:
 
 ```text
-alg-rgb v0.1.0 loaded successfully
+alg-rgb v0.1.1 loaded
 ```
 
 ---
@@ -263,42 +264,100 @@ sudo cp alg-rgb /usr/local/bin/
 
 ---
 
-## Usage
+## Installation
 
-Set keyboard color:
+The repository includes an installation script that builds and installs both the kernel module and CLI.
+
+Make the installer executable:
 
 ```bash
-alg-rgb red
+chmod +x install.sh
 ```
 
-Available colors:
+Run the installer:
 
 ```bash
-alg-rgb off
+sudo ./install.sh
+```
 
+The installer will:
+
+* Build the kernel module
+* Install the kernel module
+* Build the CLI
+* Install the `alg-rgb` command
+
+After installation, load the module:
+
+```bash
+sudo modprobe alg_rgb
+```
+
+Verify:
+
+```bash
+lsmod | grep alg_rgb
+```
+
+Expected output:
+
+```text
+alg_rgb
+```
+
+Check the CLI:
+
+```bash
+alg-rgb --version
+```
+
+Example:
+
+```bash
 alg-rgb red
-alg-rgb orange
-alg-rgb yellow
+alg-rgb cyan 2
+alg-rgb white 4
+```
+---
 
-alg-rgb lime
-alg-rgb light-green
-alg-rgb green
+## Usage
 
-alg-rgb green-cyan
-alg-rgb cyan
+Set color:
 
-alg-rgb light-blue
+```bash
+alg-rgb red
 alg-rgb blue
+alg-rgb cyan
+```
 
-alg-rgb violet
-alg-rgb magenta
-alg-rgb pink
+Set color with brightness:
 
-alg-rgb flesh
+```bash
+alg-rgb red 4
+alg-rgb red 3
+alg-rgb red 2
+alg-rgb red 1
+alg-rgb red 0
+```
 
-alg-rgb bluish-white
+Examples:
 
-alg-rgb white
+```bash
+alg-rgb orange 4
+alg-rgb cyan 2
+alg-rgb white 1
+```
+
+Show help:
+
+```bash
+alg-rgb help
+```
+
+Show version:
+
+```bash
+alg-rgb --version
 ```
 
 ---
@@ -311,12 +370,12 @@ The kernel module creates:
 /dev/alg_rgb
 ```
 
-The CLI simply writes color names to the device.
+The CLI writes validated commands to this device.
 
 Example:
 
 ```bash
-echo red > /dev/alg_rgb
+echo "red 4" > /dev/alg_rgb
 ```
 
 Using the CLI is recommended.
@@ -341,8 +400,8 @@ alg-rgb/
 ├── LICENSE
 ├── README.md
 ├── CHANGELOG.md
-├── .gitignore
-└── install.sh
+├── install.sh
+└── .gitignore
 ```
 
 ---
@@ -351,28 +410,27 @@ alg-rgb/
 
 Planned features:
 
-* Additional firmware colors
-* Brightness control
-* Lighting profiles
-* Suspend/resume restoration
-* Boot-time color restoration
-* DKMS package
-* Fedora RPM package
+- Suspend/resume restoration
+- Boot-time color restoration
+- DKMS packaging
+- Fedora RPM package
+- Additional firmware capabilities
+- More verified color presets
 
 Research targets:
 
-* Function 0x68
-* Function 0x69
-* Function 0x6A
-* Additional CLV0001 capabilities
+- Function 0x68
+- Function 0x69
+- Function 0x6A
+- Additional CLV0001 functionality
 
 ---
 
 ## Contributing
 
-Contributions, testing, and firmware research are welcome.
+Testing, reverse engineering, and firmware research are welcome.
 
-If your laptop exposes the CLV0001 interface and behaves differently, please open an issue and include:
+If your system exposes CLV0001 and behaves differently, please open an issue and include:
 
 ```bash
 uname -a
@@ -390,21 +448,18 @@ along with your laptop model.
 
 ## License
 
-Licensed under GPL-2.0.
+GPL-2.0.
 
-See the LICENSE file for details.
+See LICENSE for details.
 
 ---
 
 ## Acknowledgements
 
-Special thanks to:
-
-* ACPICA
-* Linux ACPI developers
-* Ghidra
-* The open source reverse engineering community
-* ChatGPT for assistance with ACPI analysis and documentation
+- ACPICA
+- Linux ACPI developers
+- Ghidra
+- The open source reverse engineering community
 
 ---
 
@@ -412,6 +467,6 @@ Special thanks to:
 
 This software communicates directly with undocumented firmware interfaces.
 
-The currently implemented RGB command has been tested on an Acer ALG AL15G-53 and appears safe, but use at your own risk.
+The currently implemented RGB functionality has been tested on an Acer ALG AL15G-53 and appears safe, but use at your own risk.
 
-Always exercise caution when experimenting with undocumented ACPI functionality.
+Exercise caution when experimenting with undocumented ACPI functionality.
