@@ -15,9 +15,20 @@ static void usage(const char *prog)
 {
   printf("Usage:\n");
   printf("  %s red\n", prog);
-  printf("  %s green\n", prog);
-  printf("  %s blue\n", prog);
+  printf("  %s orange\n", prog);
   printf("  %s yellow\n", prog);
+  printf("  %s lime\n", prog);
+  printf("  %s light-green\n", prog);
+  printf("  %s green\n", prog);
+  printf("  %s green-cyan\n", prog);
+  printf("  %s cyan\n", prog);
+  printf("  %s light-blue\n", prog);
+  printf("  %s blue\n", prog);
+  printf("  %s violet\n", prog);
+  printf("  %s magenta\n", prog);
+  printf("  %s pink\n", prog);
+  printf("  %s flesh\n", prog);
+  printf("  %s bluish-white\n", prog);
   printf("  %s white\n", prog);
   printf("  %s off\n", prog);
 }

@@ -22,12 +22,23 @@ This project was created by reverse engineering Acer's Windows RGB implementatio
 
 Currently supported colors:
 
-* red
-* green
-* blue
-* yellow
-* white
 * off
+* red
+* orange
+* yellow
+* lime
+* light-green
+* green
+* green-cyan
+* cyan
+* light-blue
+* blue
+* violet
+* magenta
+* pink
+* flesh
+* bluish-white
+* white
 
 Additional colors will be added as they are identified and verified from Acer's Windows implementation.
 
@@ -263,12 +274,31 @@ alg-rgb red
 Available colors:
 
 ```bash
-alg-rgb red
-alg-rgb green
-alg-rgb blue
-alg-rgb yellow
-alg-rgb white
 alg-rgb off
+
+alg-rgb red
+alg-rgb orange
+alg-rgb yellow
+
+alg-rgb lime
+alg-rgb light-green
+alg-rgb green
+
+alg-rgb green-cyan
+alg-rgb cyan
+
+alg-rgb light-blue
+alg-rgb blue
+
+alg-rgb violet
+alg-rgb magenta
+alg-rgb pink
+
+alg-rgb flesh
+
+alg-rgb bluish-white
+
+alg-rgb white
 ```
 
 ---
