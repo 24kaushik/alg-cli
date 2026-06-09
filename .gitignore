@@ -1,0 +1,28 @@
+# Kernel module build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+
+Module.symvers
+modules.order
+
+# Hidden kernel build files
+.*.cmd
+.module-common.o
+.tmp_versions/
+
+# CLI build artifacts
+alg-rgb
+
+# Editors
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
