@@ -287,13 +287,7 @@ The installer will:
 * Build the CLI
 * Install the `alg-rgb` command
 
-After installation, load the module:
-
-```bash
-sudo modprobe alg_rgb
-```
-
-Verify:
+After installation, verify:
 
 ```bash
 lsmod | grep alg_rgb
