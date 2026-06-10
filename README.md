@@ -345,7 +345,7 @@ alg-rgb white 1
 Show help:
 
 ```bash
-alg-rgb help
+alg-rgb --help
 ```
 
 Show version:
