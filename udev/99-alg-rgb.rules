@@ -1,0 +1,1 @@
+KERNEL=="alg_rgb", GROUP="alg-rgb", MODE="0660"
