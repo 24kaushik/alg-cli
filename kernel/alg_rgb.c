@@ -31,12 +31,14 @@
  *     Function:
  *         0x67
  *
- * The payload is a 4-byte buffer:
+ * Acer's AcpiBridge sends a 256-byte zero-padded buffer.  The command is
+ * stored in the first four bytes:
  *
- *     Byte 0 = Green
- *     Byte 1 = Red
- *     Byte 2 = Blue
- *     Byte 3 = Zone / Command (0xF0)
+ *     F0 = left/single RGB zone
+ *     F1 = middle RGB zone
+ *     F2 = right RGB zone
+ *     F4 = hardware brightness
+ *     E0 = keyboard enable/disable state
  *
  * Example:
  *
@@ -80,8 +82,9 @@
  *     echo blue   > /dev/alg_rgb
  *     echo yellow > /dev/alg_rgb
  *     echo white  > /dev/alg_rgb
+ *     echo "frame 255 0 127 4" > /dev/alg_rgb
  *
- * Colors are validated inside the kernel.
+ * Colors and animation frames are validated inside the kernel.
  *
  * ---------------------------------------------------------------------------
  */
@@ -93,10 +96,25 @@
 #include <linux/uaccess.h>
 #include <linux/device.h>
 #include <linux/string.h>
+#include <linux/delay.h>
+#include <linux/mutex.h>
+#include <linux/suspend.h>
+#include <linux/workqueue.h>
 #include "../include/version.h"
 
 #define DEVICE_NAME "alg_rgb"
 #define CLASS_NAME "alg"
+#define DEFAULT_TRANSMISSIONS 3
+#define MAX_TRANSMISSIONS 5
+#define TRANSMISSION_DELAY_MS 40
+#define RESUME_REAPPLY_DELAY_MS 1000
+#define DCHU_BUFFER_SIZE 256
+#define RGB_DSM_FUNCTION 0x67
+
+#define RGB_ZONE_LEFT 0xF0
+#define RGB_ZONE_MIDDLE 0xF1
+#define RGB_ZONE_RIGHT 0xF2
+#define RGB_BRIGHTNESS 0xF4
 
 /*
  * Character device major number.
@@ -120,6 +138,23 @@ static struct class *alg_class;
  * The CLV0001 ACPI device.
  */
 static acpi_handle dchu_handle;
+
+/*
+ * The embedded controller occasionally accepts the ACPI method call but
+ * drops the RGB transaction, especially after a sleep/wake cycle.  A small,
+ * bounded burst of the same known-safe transaction is substantially more
+ * reliable than a single transmission.
+ */
+static unsigned int transmissions = DEFAULT_TRANSMISSIONS;
+module_param(transmissions, uint, 0644);
+MODULE_PARM_DESC(
+    transmissions,
+    "Number of complete RGB transactions per request (1-5, default 3)");
+
+static DEFINE_MUTEX(alg_lock);
+static const struct alg_color *last_color;
+static int last_brightness = 4;
+static struct delayed_work resume_work;
 
 /*
  * CLV0001 RGB control UUID.
@@ -206,57 +241,29 @@ static const u8 brightness_levels[] = {
     0xBF};
 
 /*
- * Send a color packet to firmware.
+ * Send one packet to firmware.
  *
- * Packet layout:
+ * Acer's InsydeDCHU.dll always submits a 256-byte ACPI buffer, even though
+ * only the first four bytes contain the keyboard command.  Sending a
+ * four-byte buffer is not equivalent on this firmware and is silently
+ * ignored in some controller states.
  *
- *     [0] Green
- *     [1] Red
- *     [2] Blue
- *     [3] 0xF0
- *
- * The packet is wrapped in an ACPI package and passed to:
- *
- *     DCHU._DSM()
- *
- * using:
- *
- *     Function = 0x67
+ * The command is wrapped in an ACPI package and passed to DCHU._DSM()
+ * function 0x67, matching Acer's AcpiBridge path.
  */
-static void send_color(
-    const struct alg_color *c,
-    int brightness)
+static int send_packet_once(const u8 packet[4])
 {
     union acpi_object *out;
-
-    u8 g;
-    u8 r;
-    u8 b;
-
-    u8 rgb_buf[4];
-
-    if (brightness < 0)
-        brightness = 0;
-
-    if (brightness > 4)
-        brightness = 4;
-
-    g = (c->g * brightness_levels[brightness]) / 0xBF;
-    r = (c->r * brightness_levels[brightness]) / 0xBF;
-    b = (c->b * brightness_levels[brightness]) / 0xBF;
-
-    rgb_buf[0] = g;
-    rgb_buf[1] = r;
-    rgb_buf[2] = b;
-    rgb_buf[3] = 0xF0;
-
+    u8 dchu_buf[DCHU_BUFFER_SIZE] = {0};
     union acpi_object buf_obj;
     union acpi_object pkg_obj;
     union acpi_object pkg_elements[1];
 
+    memcpy(dchu_buf, packet, 4);
+
     buf_obj.type = ACPI_TYPE_BUFFER;
-    buf_obj.buffer.length = sizeof(rgb_buf);
-    buf_obj.buffer.pointer = rgb_buf;
+    buf_obj.buffer.length = sizeof(dchu_buf);
+    buf_obj.buffer.pointer = dchu_buf;
 
     pkg_elements[0] = buf_obj;
 
@@ -268,17 +275,200 @@ static void send_color(
         dchu_handle,
         &rgb_guid,
         0,
-        0x67,
+        RGB_DSM_FUNCTION,
         &pkg_obj);
 
-    if (out)
-        ACPI_FREE(out);
+    if (!out)
+        return -EIO;
+
+    ACPI_FREE(out);
+
+    return 0;
+}
+
+/*
+ * Apply one complete static-color transaction.
+ *
+ * Brightness is a hardware command of its own; it must not be implemented by
+ * scaling the RGB components.  A single-color request must also update all
+ * three possible zones and finish with the controller state command.  This is
+ * the sequence used by Acer's keyboard application and by the established
+ * Clevo Linux driver for the same CLV0001 interface.
+ */
+static int send_color_sequence(
+    const struct alg_color *c,
+    int brightness)
+{
+    const u8 enabled_packet[4] = {0x01, 0xF0, 0x7F, 0xE0};
+    const u8 disabled_packet[4] = {0x01, 0x30, 0x00, 0xE0};
+    u8 brightness_packet[4] = {
+        brightness_levels[brightness],
+        0x00,
+        0x00,
+        RGB_BRIGHTNESS};
+    u8 color_packet[4] = {c->g, c->r, c->b, RGB_ZONE_LEFT};
+    bool enable = brightness > 0 && (c->g || c->r || c->b);
+    int ret;
+
+    ret = send_packet_once(brightness_packet);
+    if (ret)
+        return ret;
+
+    color_packet[3] = RGB_ZONE_LEFT;
+    ret = send_packet_once(color_packet);
+    if (ret)
+        return ret;
+
+    color_packet[3] = RGB_ZONE_MIDDLE;
+    ret = send_packet_once(color_packet);
+    if (ret)
+        return ret;
+
+    color_packet[3] = RGB_ZONE_RIGHT;
+    ret = send_packet_once(color_packet);
+    if (ret)
+        return ret;
+
+    return send_packet_once(
+        enable ? enabled_packet : disabled_packet);
+}
+
+/*
+ * Send one low-overhead animation frame.
+ *
+ * A normal static transaction first enables the controller.  Subsequent
+ * frames only need to update the three possible color zones.  Skipping the
+ * redundant retries, state packet, and informational log on every frame keeps
+ * software-rendered animation responsive and avoids flooding the kernel log.
+ */
+static int send_frame(
+    u8 r,
+    u8 g,
+    u8 b)
+{
+    u8 color_packet[4] = {
+        g,
+        r,
+        (u8)(((unsigned int)b * 0xC8) / 0xFF),
+        RGB_ZONE_LEFT};
+    int ret;
+
+    color_packet[3] = RGB_ZONE_LEFT;
+    ret = send_packet_once(color_packet);
+    if (ret)
+        return ret;
+
+    color_packet[3] = RGB_ZONE_MIDDLE;
+    ret = send_packet_once(color_packet);
+    if (ret)
+        return ret;
+
+    color_packet[3] = RGB_ZONE_RIGHT;
+    ret = send_packet_once(color_packet);
+    if (ret)
+        return ret;
+
+    return 0;
+}
+
+/*
+ * Send a bounded number of complete transactions.  The firmware does not
+ * expose a documented acknowledgement for the RGB controller, so a
+ * successful AML evaluation alone cannot tell us whether the EC consumed the
+ * transaction.
+ */
+static int send_color(
+    const struct alg_color *c,
+    int brightness)
+{
+    unsigned int attempt;
+    unsigned int count = clamp_t(
+        unsigned int,
+        transmissions,
+        1,
+        MAX_TRANSMISSIONS);
+    int ret = -EIO;
+    bool evaluated = false;
+
+    for (attempt = 0; attempt < count; attempt++)
+    {
+        ret = send_color_sequence(c, brightness);
+        if (!ret)
+            evaluated = true;
+
+        if (attempt + 1 < count)
+            msleep(TRANSMISSION_DELAY_MS);
+    }
+
+    if (!evaluated)
+    {
+        pr_err(
+            "alg-rgb: ACPI _DSM failed for color '%s' brightness=%d\n",
+            c->name,
+            brightness);
+        return ret;
+    }
 
     pr_info(
-        "alg-rgb: applied color '%s' brightness=%d\n",
+        "alg-rgb: applied color '%s' brightness=%d "
+        "(%u complete transactions, Acer 256-byte protocol)\n",
         c->name,
-        brightness);
+        brightness,
+        count);
+
+    return 0;
 }
+
+static void alg_resume_work(struct work_struct *work)
+{
+    int ret;
+
+    mutex_lock(&alg_lock);
+
+    if (!last_color)
+        goto out;
+
+    ret = send_color(last_color, last_brightness);
+    if (ret)
+    {
+        pr_err(
+            "alg-rgb: failed to restore keyboard state after resume: %d\n",
+            ret);
+    }
+    else
+    {
+        pr_info("alg-rgb: restored keyboard state after resume\n");
+    }
+
+out:
+    mutex_unlock(&alg_lock);
+}
+
+static int alg_pm_notify(
+    struct notifier_block *notifier,
+    unsigned long action,
+    void *data)
+{
+    switch (action)
+    {
+    case PM_POST_SUSPEND:
+    case PM_POST_HIBERNATION:
+    case PM_POST_RESTORE:
+        mod_delayed_work(
+            system_wq,
+            &resume_work,
+            msecs_to_jiffies(RESUME_REAPPLY_DELAY_MS));
+        break;
+    default:
+        break;
+    }
+
+    return NOTIFY_OK;
+}
+
+static struct notifier_block alg_pm_notifier = {
+    .notifier_call = alg_pm_notify,
+};
 
 /*
  * Write handler for:
@@ -293,6 +483,7 @@ static void send_color(
  *     yellow
  *     white
  *     off
+ *     frame 255 0 127 4
  *
  * Unknown values are rejected.
  */
@@ -306,6 +497,12 @@ static ssize_t alg_write(
     int i;
     int brightness = 4;
     char color_name[32];
+    char extra;
+    int fields;
+    int ret;
+    unsigned int frame_r;
+    unsigned int frame_g;
+    unsigned int frame_b;
 
     if (len == 0)
         return -EINVAL;
@@ -333,12 +530,63 @@ static ssize_t alg_write(
      *     "red"
      */
     strim(kbuf);
-    if (sscanf(
-            kbuf,
-            "%31s %d",
-            color_name,
-            &brightness) < 1)
+
+    if (!strncmp(kbuf, "frame ", 6))
     {
+        fields = sscanf(
+            kbuf,
+            "frame %u %u %u %d %c",
+            &frame_r,
+            &frame_g,
+            &frame_b,
+            &brightness,
+            &extra);
+
+        if (fields != 4 ||
+            frame_r > 255 ||
+            frame_g > 255 ||
+            frame_b > 255 ||
+            brightness < 0 ||
+            brightness > 4)
+        {
+            pr_err(
+                "alg-rgb: expected: frame <red 0-255> "
+                "<green 0-255> <blue 0-255> <brightness 0-4>\n");
+            return -EINVAL;
+        }
+
+        mutex_lock(&alg_lock);
+
+        ret = send_frame(
+            (u8)frame_r,
+            (u8)frame_g,
+            (u8)frame_b);
+
+        mutex_unlock(&alg_lock);
+
+        if (ret)
+            return ret;
+
+        return len;
+    }
+
+    fields = sscanf(
+        kbuf,
+        "%31s %d %c",
+        color_name,
+        &brightness,
+        &extra);
+
+    if (fields == 1 && strcmp(kbuf, color_name))
+        return -EINVAL;
+
+    if (fields < 1 || fields > 2)
+        return -EINVAL;
+
+    if (brightness < 0 || brightness > 4)
+    {
+        pr_err(
+            "alg-rgb: brightness must be between 0 and 4\n");
         return -EINVAL;
     }
 
@@ -350,10 +598,22 @@ static ssize_t alg_write(
 
         if (!strcmp(color_name, colors[i].name))
         {
+            mutex_lock(&alg_lock);
 
-            send_color(
+            ret = send_color(
                 &colors[i],
                 brightness);
+
+            if (!ret)
+            {
+                last_color = &colors[i];
+                last_brightness = brightness;
+            }
+
+            mutex_unlock(&alg_lock);
+
+            if (ret)
+                return ret;
 
             return len;
         }
@@ -384,6 +644,7 @@ static const struct file_operations fops = {
 static int __init alg_init(void)
 {
     acpi_status status;
+    int ret;
 
     pr_info("alg-rgb: loading\n");
     pr_info("alg-rgb v%s loaded\n", ALG_RGB_VERSION_STRING);
@@ -448,6 +709,28 @@ static int __init alg_init(void)
         return -EINVAL;
     }
 
+    INIT_DELAYED_WORK(&resume_work, alg_resume_work);
+
+    ret = register_pm_notifier(&alg_pm_notifier);
+    if (ret)
+    {
+        device_destroy(
+            alg_class,
+            MKDEV(major, 0));
+
+        class_destroy(alg_class);
+
+        unregister_chrdev(
+            major,
+            DEVICE_NAME);
+
+        pr_err(
+            "alg-rgb: failed to register power notifier: %d\n",
+            ret);
+
+        return ret;
+    }
+
     pr_info(
         "alg-rgb: loaded successfully\n");
 
@@ -462,6 +745,9 @@ static int __init alg_init(void)
  */
 static void __exit alg_exit(void)
 {
+    unregister_pm_notifier(&alg_pm_notifier);
+    cancel_delayed_work_sync(&resume_work);
+
     device_destroy(
         alg_class,
         MKDEV(major, 0));

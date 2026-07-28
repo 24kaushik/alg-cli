@@ -18,6 +18,9 @@ This project was created by reverse engineering Acer's Windows RGB implementatio
 - Simple CLI interface
 - Built-in color validation
 - Brightness control
+- Software-rendered wave, rainbow, and color-pulse animations
+- Reliable bounded retransmission for firmware-dropped commands
+- Automatic static-color restoration after suspend and hibernation
 - Open source
 - Reverse engineered protocol documentation
 
@@ -127,10 +130,8 @@ Function:
 Payload format:
 
 ```text
-Byte 0 = Green
-Byte 1 = Red
-Byte 2 = Blue
-Byte 3 = Command / Zone
+256-byte zero-padded ACPI buffer
+Bytes 0..3 = keyboard command
 ```
 
 Important:
@@ -145,23 +146,53 @@ is used internally instead of:
 RGB
 ```
 
-Example packets:
+Static color packets:
 
 ```text
-Red:
-00 FF 00 F0
+F0 = left or single zone
+F1 = middle zone
+F2 = right zone
 
-Green:
-FF 00 00 F0
+Byte 0 = Green
+Byte 1 = Red
+Byte 2 = Blue
+Byte 3 = Zone
+```
 
-Blue:
-00 00 FF F0
+Brightness is a separate hardware command:
 
-Yellow:
-FF FF 00 F0
+```text
+2F 00 00 F4 = level 1
+5F 00 00 F4 = level 2
+8F 00 00 F4 = level 3
+BF 00 00 F4 = level 4
+```
 
-White:
-FF FF FF F0
+The driver sends brightness, updates all three possible zones, and finishes
+with the `E0` controller-state command. This matches Acer's Control Center
+instead of approximating brightness by reducing the RGB channel values.
+
+Example for pink at level 2:
+
+```text
+5F 00 00 F4
+00 FF 7F F0
+00 FF 7F F1
+00 FF 7F F2
+01 F0 7F E0
+```
+
+The AL15G-53 controller ignores the optional animation-mode packets found in
+Acer's generic Control Center. `alg-rgb` therefore renders supported effects
+in userspace and sends quiet, low-overhead RGB frames through the verified
+static-color transport.
+
+Available software animations:
+
+```text
+wave
+rainbow
+pulse
 ```
 
 ---
@@ -342,6 +373,43 @@ alg-rgb cyan 2
 alg-rgb white 1
 ```
 
+Start a software animation:
+
+```bash
+alg-rgb animate wave
+alg-rgb animate rainbow
+alg-rgb animate pulse pink
+```
+
+Animations detach into the background, so the command returns immediately
+and the terminal can be closed. Starting another animation automatically
+replaces the current one. An optional frame delay in milliseconds controls
+speed; smaller values are faster:
+
+```bash
+alg-rgb animate wave 80
+alg-rgb animate pulse cyan 120
+```
+
+Supported frame delays are 40–2000 ms, with a default of 120 ms. Because this
+keyboard exposes only one effective lighting zone, `wave` changes color and
+brightness across the whole keyboard rather than moving between keys.
+
+Check or stop the current background animation:
+
+```bash
+alg-rgb status
+alg-rgb stop
+```
+
+Any static color command automatically stops the animation and applies the
+new state:
+
+```bash
+alg-rgb pink 2
+alg-rgb off
+```
+
 Show help:
 
 ```bash
@@ -370,9 +438,11 @@ Example:
 
 ```bash
 echo "red 4" > /dev/alg_rgb
+echo "frame 255 0 127 4" > /dev/alg_rgb
 ```
 
-Using the CLI is recommended.
+The `frame` command is intended for the CLI animation renderer. Using the CLI
+is recommended.
 
 ---
 
@@ -404,7 +474,6 @@ alg-rgb/
 
 Planned features:
 
-- Suspend/resume restoration
 - Boot-time color restoration
 - DKMS packaging
 - Fedora RPM package
@@ -464,3 +533,24 @@ This software communicates directly with undocumented firmware interfaces.
 The currently implemented RGB functionality has been tested on an Acer ALG AL15G-53 and appears safe, but use at your own risk.
 
 Exercise caution when experimenting with undocumented ACPI functionality.
+
+## Troubleshooting
+
+If the command reports that `/dev/alg_rgb` is missing, load the module:
+
+```bash
+sudo modprobe alg_rgb
+```
+
+If a color command stops working after closing and reopening the lid, make
+sure the current driver is installed. The driver remembers the last successful
+static color and reapplies it one second after resume. Each static request
+uses Acer's full brightness/three-zone/enable transaction and is sent as a
+short, bounded burst because the ALG embedded controller can silently drop a
+transaction.
+
+Check the driver log with:
+
+```bash
+journalctl -k -g alg-rgb
+```

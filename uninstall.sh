@@ -6,6 +6,13 @@ VERSION=$(
     sed 's/.*"\(.*\)".*/\1/'
 )
 
+if [[ -x /usr/local/bin/alg-rgb ]]; then
+    echo "[*] Stopping any background RGB animation..."
+    sudo pkill -TERM -x alg-rgb 2>/dev/null || true
+    sleep 0.1
+    sudo /usr/local/bin/alg-rgb stop >/dev/null 2>&1 || true
+fi
+
 echo "[*] Removing DKMS module..."
 sudo dkms remove "alg-rgb/${VERSION}" --all 2>/dev/null || true
 
