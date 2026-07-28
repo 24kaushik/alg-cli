@@ -2,7 +2,7 @@
 
 // SPDX-License-Identifier: GPL-2.0
 
-#include <ctype.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -14,7 +14,6 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/file.h>
-#include <sys/stat.h>
 #include <sys/types.h>
 
 #include "../include/version.h"
@@ -24,7 +23,7 @@
 #endif
 
 #ifndef ANIMATION_STATE_PATH
-#define ANIMATION_STATE_PATH "/run/alg-rgb-animation.pid"
+#define ANIMATION_STATE_PATH "/run/alg-rgb/animation.lock"
 #endif
 #define DEFAULT_FRAME_DELAY_MS 120
 #define MIN_FRAME_DELAY_MS 40
@@ -201,15 +200,27 @@ static void handle_animation_signal(int signal_number)
   animation_running = 0;
 }
 
-static int open_animation_state(void)
+static int open_animation_state(bool missing_ok)
 {
   int fd = open(
       ANIMATION_STATE_PATH,
-      O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
-      0644);
+      O_RDWR | O_CLOEXEC | O_NOFOLLOW);
 
-  if (fd < 0)
-    perror("open(/run/alg-rgb-animation.pid)");
+  if (fd < 0 && !(missing_ok && errno == ENOENT))
+  {
+    fprintf(
+        stderr,
+        "alg-rgb: cannot open animation state %s: %s\n",
+        ANIMATION_STATE_PATH,
+        strerror(errno));
+
+    if (errno == EACCES)
+    {
+      fprintf(
+          stderr,
+          "alg-rgb: reinstall the runtime permissions and log in again\n");
+    }
+  }
 
   return fd;
 }
@@ -262,9 +273,18 @@ static int stop_animation_daemon(int report)
   int fd;
   int attempt;
 
-  fd = open_animation_state();
+  fd = open_animation_state(true);
   if (fd < 0)
+  {
+    if (errno == ENOENT)
+    {
+      if (report)
+        printf("No background keyboard animation is running.\n");
+      return 0;
+    }
+
     return -1;
+  }
 
   if (flock(fd, LOCK_EX | LOCK_NB) == 0)
   {
@@ -330,9 +350,17 @@ static int print_animation_status(void)
   pid_t pid;
   int fd;
 
-  fd = open_animation_state();
+  fd = open_animation_state(true);
   if (fd < 0)
+  {
+    if (errno == ENOENT)
+    {
+      printf("No background keyboard animation is running.\n");
+      return 0;
+    }
+
     return 1;
+  }
 
   if (flock(fd, LOCK_EX | LOCK_NB) == 0)
   {
@@ -498,7 +526,7 @@ static int run_animation(
     length = snprintf(
         command,
         sizeof(command),
-        "frame %u %u %u 4",
+        "frame %u %u %u",
         red,
         green,
         blue);
@@ -566,7 +594,7 @@ static int start_animation_daemon(
 
     signal(SIGHUP, SIG_IGN);
 
-    state_fd = open_animation_state();
+    state_fd = open_animation_state(false);
     if (state_fd < 0 ||
         flock(state_fd, LOCK_EX | LOCK_NB) < 0 ||
         ftruncate(state_fd, 0) < 0 ||

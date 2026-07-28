@@ -1,9 +1,16 @@
-CC=gcc
-CFLAGS=-O2 -Wall -Wextra
-LDLIBS=-lm
+CC ?= cc
+CFLAGS ?= -O2 -Wall -Wextra -Wpedantic
+LDLIBS ?= -lm
 
-all:
-	$(CC) $(CFLAGS) alg-rgb.c -o alg-rgb $(LDLIBS)
+.PHONY: all clean test
+
+all: alg-rgb
+
+alg-rgb: alg-rgb.c ../include/version.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) alg-rgb.c -o $@ $(LDLIBS)
 
 clean:
 	rm -f alg-rgb
+
+test:
+	../tests/test-cli.sh

@@ -2,7 +2,9 @@
 
 Native Linux RGB keyboard control for Acer ALG laptops using the undocumented CLV0001 ACPI interface.
 
-`alg-rgb` is a lightweight Linux kernel driver and command-line utility that allows controlling the keyboard backlight directly from Linux without Windows, vendor software, background services, or third-party RGB suites.
+`alg-rgb` is a lightweight Linux kernel driver and command-line utility that
+controls the keyboard backlight directly from Linux without Windows, vendor
+software, or third-party RGB suites.
 
 This project was created by reverse engineering Acer's Windows RGB implementation and reproducing the same ACPI communication path on Linux.
 
@@ -275,7 +277,7 @@ dmesg | tail
 Expected:
 
 ```text
-alg-rgb v0.1.1 loaded
+alg-rgb v0.1.3 loaded
 ```
 
 ---
@@ -285,6 +287,7 @@ alg-rgb v0.1.1 loaded
 ```bash
 cd cli
 make
+make test
 ```
 
 Install:
@@ -308,15 +311,20 @@ chmod +x install.sh
 Run the installer:
 
 ```bash
-sudo ./install.sh
+./install.sh
 ```
 
 The installer will:
 
-* Build the kernel module
-* Install the kernel module
-* Build the CLI
-* Install the `alg-rgb` command
+- Build and install the DKMS kernel module
+- Build and install the `alg-rgb` command
+- Install the udev rule for non-root device access
+- Create the shared runtime lock used by background animations
+- Enable automatic module loading
+
+The script uses `sudo` only for installation steps. If it adds your account to
+the `alg-rgb` group, log out and back in once before running commands without
+`sudo`.
 
 After installation, verify:
 
@@ -438,10 +446,11 @@ Example:
 
 ```bash
 echo "red 4" > /dev/alg_rgb
-echo "frame 255 0 127 4" > /dev/alg_rgb
+echo "frame 255 0 127" > /dev/alg_rgb
 ```
 
-The `frame` command is intended for the CLI animation renderer. Using the CLI
+The internal `frame` command accepts RGB channel values only. Software
+animations create brightness changes by scaling those channels. Using the CLI
 is recommended.
 
 ---
@@ -461,11 +470,20 @@ alg-rgb/
 ├── include/
 │   └── version.h
 │
+├── tests/
+│   └── test-cli.sh
+│
+├── tmpfiles.d/
+│   └── alg-rgb.conf
+│
+├── udev/
+│   └── 99-alg-rgb.rules
+│
+├── dkms.conf
 ├── LICENSE
 ├── README.md
-├── CHANGELOG.md
 ├── install.sh
-└── .gitignore
+└── uninstall.sh
 ```
 
 ---
@@ -474,8 +492,6 @@ alg-rgb/
 
 Planned features:
 
-- Boot-time color restoration
-- DKMS packaging
 - Fedora RPM package
 - Additional firmware capabilities
 - More verified color presets
@@ -540,6 +556,14 @@ If the command reports that `/dev/alg_rgb` is missing, load the module:
 
 ```bash
 sudo modprobe alg_rgb
+```
+
+If an animation reports a permission error for
+`/run/alg-rgb/animation.lock`, reinstall and then log out and back in so your
+`alg-rgb` group membership is refreshed:
+
+```bash
+./install.sh
 ```
 
 If a color command stops working after closing and reopening the lid, make
